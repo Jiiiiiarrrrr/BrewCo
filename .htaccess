@@ -1,0 +1,91 @@
+# ===== Brew & Co. security hardening (Apache 2.4 / XAMPP) =====
+# 1) NEVER show folder contents (kills the "Index of /INVENTORY" listing)
+Options -Indexes
+
+# 2) Proper entry point when a folder is requested
+DirectoryIndex index.php hub.php login.php
+
+# 3) Never serve raw database dumps, docs, logs, backups or archives
+<FilesMatch "(?i)\.(sql|md|log|ini|conf|bak|sh|zip|tar|gz)$">
+  Require all denied
+</FilesMatch>
+
+# 4) No one probes for info pages
+<Files "phpinfo.php">
+  Require all denied
+</Files>
+
+# 5) Per-subsystem session cookie (Apache mod_php / XAMPP):
+#    Inventory, HRMS and POS each get their OWN session, so logging into one
+#    system in another tab no longer kicks you out of the others.
+php_value session.name BREWCO_INV
+php_value session.cookie_httponly 1
+php_value session.cookie_samesite Lax
+
+# 5) Hide server fingerprints (no Apache/PHP version in headers or error pages)
+ServerSignature Off
+Header unset X-Powered-By
+php_flag expose_php off
+
+# 6) Never serve backups, editor junk, or raw dumps/docs
+<FilesMatch "(?i)(\.(bak|backup|old|orig|save|swp|dist|sql|md|log|ini|conf|sh|zip|tar|gz|txt)$|~$)">
+  Require all denied
+</FilesMatch>
+
+# 7) Include-only PHP: blocked from direct web access (server-side include still works)
+<FilesMatch "(?i)^db\.php$">
+  Require all denied
+</FilesMatch>
+
+# 8) CLEAN URLs — the address bar shows /login, /hub, /reports … not login.php.
+#    GET .../page.php  -> 301 -> .../page   (POSTs are never redirected, forms stay safe)
+#    .../page          -> internally serves page.php
+RewriteEngine On
+RewriteBase /INVENTORY/
+
+# POS consolidation: the modern /pos/ application is the only active POS.
+# Old root POS URLs are retained as short-term compatibility redirects.
+RewriteRule ^pos-client(?:\.php)?$ pos/kiosk.php [R=302,L,NE]
+RewriteRule ^pos-cashier(?:\.php)?$ pos/index.php [R=302,L,NE]
+RewriteRule ^pos-admin(?:\.php)?$ pos/index.php [R=302,L,NE]
+
+# Block exotic/dangerous HTTP verbs (PUT stays: POS order updates use it)
+RewriteCond %{REQUEST_METHOD} ^(TRACE|TRACK|CONNECT|DELETE)$
+RewriteRule .* - [R=405,L]
+
+RewriteCond %{REQUEST_METHOD} GET
+RewriteCond %{THE_REQUEST} ^[A-Z]+\ /+(.+?)\.php[\s?]
+RewriteCond %{REQUEST_URI} !/api/
+RewriteRule ^(.+?)\.php$ $1 [R=301,L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.+?)/?$ $1.php [L]
+
+# 9) Security headers (inherited by hrms/ and pos/ too)
+Header set X-Content-Type-Options "nosniff"
+Header set X-Frame-Options "SAMEORIGIN"
+Header set Referrer-Policy "strict-origin-when-cross-origin"
+Header set Permissions-Policy "geolocation=(), payment=()"
+
+# 10) Strict sessions: reject foreign/uninitialized session ids, idle-out after 2h
+php_value session.use_strict_mode 1
+php_value session.gc_maxlifetime 7200
+
+# 11) Content-Security-Policy — no external scripts/styles/fonts anywhere in
+#     this project, so lock the browser to same-origin resources; inline
+#     script/style stays allowed (the UI uses them), plugins and base-tag
+#     hijacks are impossible, forms can only post back to this site.
+Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'"
+
+# 12) Never serve hidden files (.git, .env, editor junk, …)
+<FilesMatch "^\.">
+  Require all denied
+</FilesMatch>
+
+# 13) Stronger session ids (192-bit) and no PHP error output to the browser.
+#     Errors still go to Apache's error log. If you ever need warnings visible
+#     while debugging, flip display_errors to On temporarily.
+php_value session.sid_length 48
+php_value session.sid_bits_per_character 6
+php_flag display_errors Off
+php_flag log_errors On
